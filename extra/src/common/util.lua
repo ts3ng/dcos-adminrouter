@@ -58,6 +58,8 @@ function string:strip()
     return self:match "^%s*(.-)%s*$"
 end
 
+-- Lua 5.1+ base64 v3.0 (c) 2009 by Alex Kloss <alexthkloss@web.de>
+
 function util.base64encode(data)
     return ((data:gsub('.', function(x) 
         local r,b='',x:byte()
