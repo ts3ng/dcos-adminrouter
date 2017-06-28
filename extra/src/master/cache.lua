@@ -1,7 +1,7 @@
 local cjson_safe = require "cjson.safe"
 local shmlock = require "resty.lock"
 local http = require "resty.http"
-local marathonhttpcred = os.getenv("MESOSPHERE_HTTP_CREDENTIALS")
+local basichttpcred = os.getenv("MESOSPHERE_HTTP_CREDENTIALS")
 
 local util = require "master.util"
 
@@ -61,16 +61,12 @@ end
 
 local function request(url, accept_404_reply, auth_token)
     local headers = {}
-    ngx.log(ngx.DEBUG, "ETHOS: request " .. url .. " being called")
     if auth_token ~= nil then
-        ngx.log(ngx.DEBUG, "TEST: auth_token" .. auth_token)
         headers = {["Authorization"] = "token=" .. auth_token}
     end
-    if marathonhttpcred ~= nil then
-        ngx.log(ngx.DEBUG, "ETHOS: Marathon auth cred set")
+    if basichttpcred ~= nil then
         if string.find(url, ":8080") then
-            ngx.log(ngx.DEBUG, "ETHOS: call to port 8080 marathon injecting BASIC auth header")
-            headers = {["Authorization"] = "Basic " .. util.base64encode(marathonhttpcred)}
+            headers = {["Authorization"] = "Basic " .. util.base64encode(basichttpcred)}
         end
     end
 

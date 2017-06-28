@@ -9,7 +9,7 @@ local util = require "common.util"
 local SECRET_KEY = nil
 local BODY_AUTH_ERROR_RESPONSE = nil
 
-local marathonhttpcred = os.getenv("MESOSPHERE_HTTP_CREDENTIALS")
+local basichttpcred = os.getenv("MESOSPHERE_HTTP_CREDENTIALS")
 local errorpages_dir_path = os.getenv("AUTH_ERROR_PAGE_DIR_PATH")
 if errorpages_dir_path == nil then
     ngx.log(ngx.WARN, "AUTH_ERROR_PAGE_DIR_PATH not set.")
@@ -88,7 +88,7 @@ local function validate_jwt_or_exit()
         if string.find(auth_header, "Basic") then
           ngx.log(
               ngx.DEBUG, "Basic authentication header found " ..
-              "override with token based authentication header."
+              "look for token in cookie and override."
               )
           local cookie, err = cookiejar:new()
           token = cookie:get("dcos-acs-auth-cookie")
@@ -124,13 +124,11 @@ local function validate_jwt_or_exit()
 
     if token == nil then
         ngx.log(ngx.NOTICE, "No auth token in request.")
-        ngx.log(ngx.DEBUG, "HEADERS: ".. ngx.req.raw_header())
         return exit_401()
     end
 
     -- ngx.log(ngx.DEBUG, "Token: `" .. token .. "`")
     -- Parse and verify token (also validate expiration time).
-    ngx.log(ngx.DEBUG, "HEADERS: ".. ngx.req.raw_header())
     local jwt_obj = jwt:verify(SECRET_KEY, token)
     ngx.log(ngx.DEBUG, "JSONnized JWT table: " .. cjson.encode(jwt_obj))
     -- .verified is False even for messed up tokens whereas .valid can be nil.
@@ -161,15 +159,15 @@ local function validate_jwt_or_exit()
             ngx.log(ngx.DEBUG, "Setting authorization header back to basic.")
             ngx.req.set_header("Authorization", auth_header)
         else
-            if marathonhttpcred ~= nil then
+            if basichttpcred ~= nil then
 	        ngx.log(ngx.DEBUG, "auth_header is token type set authorization to basic.")
-	        ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(marathonhttpcred))
+	        ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
             end
         end
     else
-        if marathonhttpcred ~= nil then
+        if basichttpcred ~= nil then
             ngx.log(ngx.DEBUG, "auth_header nil set authorization to basic.")
-            ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(marathonhttpcred))
+            ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
         end
     end
 
