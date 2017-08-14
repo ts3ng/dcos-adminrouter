@@ -151,6 +151,12 @@ local function fetch_and_store_marathon_apps(auth_token)
           goto continue
        end
 
+       local authLevel = labels["DCOS_SERVICE_AUTH_LEVEL"]
+       if not authLevel then
+          ngx.log(ngx.NOTICE, "Cannot find DCOS_SERVICE_AUTH_LEVEL for app '" .. appId .. "', default to 'full'")
+          authLevel = "full"
+       end
+
        -- Lua arrays default starting index is 1 not the 0 of marathon
        portIdx = portIdx + 1
 
@@ -196,7 +202,7 @@ local function fetch_and_store_marathon_apps(auth_token)
        end
 
        local url = scheme .. "://" .. host .. ":" .. port
-       svcApps[svcId] = {scheme=scheme, url=url}
+       svcApps[svcId] = {scheme=scheme, url=url, auth=authLevel}
 
        ::continue::
     end

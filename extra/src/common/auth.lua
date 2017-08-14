@@ -75,6 +75,23 @@ local function validate_jwt_or_exit()
     -- and return uid. In all other cases, terminate request handling and
     -- respond with an appropriate HTTP error status code.
 
+    -- Get service data from cache
+    local authLevel = "full"
+    local svcapps = cache.get_cache_entry("svcapps")
+    if svcapps == nil then
+        ngx.log(ngx.INFO, "No svcapps cached")
+    else
+        local svc = svcapps[ngx.var.serviceid]
+        if svc and svc["auth"] then
+            authLevel = string.lower(svc["auth"])
+            ngx.log(ngx.DEBUG, "svc ".. ngx.var.serviceid .." auth: ".. authLevel)
+            if authLevel == "none" then
+                ngx.log(ngx.INFO, "No authentication required")
+                return
+            end
+        end
+    end
+
     if SECRET_KEY == nil then
         ngx.log(ngx.ERR, "Secret key not set. Cannot validate request.")
         return exit_401()
@@ -147,10 +164,12 @@ local function validate_jwt_or_exit()
 
     ngx.log(ngx.NOTICE, "UID from valid JWT: `".. uid .. "`")
 
-    res = ngx.location.capture("/acs/api/v1/users/" .. uid)
-    if res.status ~= ngx.HTTP_OK then
-        ngx.log(ngx.ERR, "User not found: `" .. uid .. "`")
-        return exit_401()
+    if authLevel == "full" then
+        res = ngx.location.capture("/acs/api/v1/users/" .. uid)
+        if res.status ~= ngx.HTTP_OK then
+            ngx.log(ngx.ERR, "User not found: `" .. uid .. "`")
+            return exit_401()
+        end
     end
     -- set authorization header back to basic
     if auth_header ~= nil then
@@ -159,8 +178,8 @@ local function validate_jwt_or_exit()
             ngx.req.set_header("Authorization", auth_header)
         else
             if basichttpcred ~= nil then
-	        ngx.log(ngx.DEBUG, "auth_header is token type set authorization to basic.")
-	        ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
+                ngx.log(ngx.DEBUG, "auth_header is token type set authorization to basic.")
+                ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
             end
         end
     else
