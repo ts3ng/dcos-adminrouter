@@ -41,4 +41,13 @@ function util.base64encode(data)
 end
 
 
+function util.table_len(tbl)
+    -- Return the length of the table, without the limitations of #tbl
+    -- approach, where nil value in the table terminates counting/acts as the
+    -- end of the table.
+    local count = 0
+    for _ in pairs(tbl) do count = count + 1 end
+    return count
+end
+
 return util
