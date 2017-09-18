@@ -2,11 +2,8 @@ local cjson_safe = require "cjson.safe"
 local shmlock = require "resty.lock"
 local http = require "resty.http"
 local resolver = require "resty.resolver"
+local util = require "util"
 local basichttpcred = os.getenv("MESOSPHERE_HTTP_CREDENTIALS")
-
-local util = require "master.util"
-
-local _M = {}
 
 -- In order to make caching code testable, these constants need to be
 -- configurable/exposed through env vars.
@@ -16,6 +13,9 @@ local _M = {}
 -- CACHE_FIRST_POLL_DELAY << CACHE_EXPIRATION < CACHE_POLL_PERIOD < CACHE_MAX_AGE_SOFT_LIMIT < CACHE_MAX_AGE_HARD_LIMIT
 --
 -- CACHE_BACKEND_REQUEST_TIMEOUT << CACHE_REFRESH_LOCK_TIMEOUT
+--
+-- Before changing CACHE_POLL_INTERVAL, please check the comment for resolver
+-- statement configuration in includes/http/master.conf
 --
 -- All are in units of seconds. Below are the defaults:
 local _CONFIG = {}
@@ -41,7 +41,6 @@ for key, value in pairs(env_vars) do
     end
 end
 
-
 local function cache_data(key, value)
     -- Store key/value pair to SHM cache (shared across workers).
     -- Return true upon success, false otherwise.
@@ -66,10 +65,10 @@ local function request(url, accept_404_reply, auth_token)
         headers = {["Authorization"] = "token=" .. auth_token}
     end
     if basichttpcred ~= nil then
-        if string.find(url, ":8080") or string.find(url, ":5050") then
+        if string.find(url, ":8080") then
             headers = {["Authorization"] = "Basic " .. util.base64encode(basichttpcred)}
-        end
-    end
+        end 
+    end 
 
     -- Use cosocket-based HTTP library, as ngx subrequests are not available
     -- from within this code path (decoupled from nginx' request processing).
@@ -102,6 +101,14 @@ local function request(url, accept_404_reply, auth_token)
     return res, nil
 end
 
+local function is_ip_per_task(app)
+    return app["ipAddress"] ~= nil and app["ipAddress"] ~= cjson_safe.null
+end
+
+local function is_user_network(app)
+    local container = app["container"]
+    return container and container["type"] == "DOCKER" and container["docker"]["network"] == "USER"
+end
 
 local function fetch_and_store_marathon_apps(auth_token)
     -- Access Marathon through localhost.
@@ -131,7 +138,7 @@ local function fetch_and_store_marathon_apps(auth_token)
        end
 
        -- Service name should exist as we asked Marathon for it
-       local svcId = labels["DCOS_SERVICE_NAME"]
+       local svcId = util.normalize_service_name(labels["DCOS_SERVICE_NAME"])
 
        local scheme = labels["DCOS_SERVICE_SCHEME"]
        if not scheme then
@@ -149,12 +156,6 @@ local function fetch_and_store_marathon_apps(auth_token)
        if not portIdx then
           ngx.log(ngx.NOTICE, "Cannot convert port to number for app '" .. appId .. "'")
           goto continue
-       end
-
-       local authLevel = labels["DCOS_SERVICE_AUTH_LEVEL"]
-       if not authLevel then
-          ngx.log(ngx.NOTICE, "Cannot find DCOS_SERVICE_AUTH_LEVEL for app '" .. appId .. "', default to 'full'")
-          authLevel = "full"
        end
 
        -- Lua arrays default starting index is 1 not the 0 of marathon
@@ -183,13 +184,43 @@ local function fetch_and_store_marathon_apps(auth_token)
           "Reading state for appId '" .. appId .. "' from task with id '" .. task["id"] .. "'"
           )
 
-       local host = task["host"]
-       if not host then
-          ngx.log(ngx.NOTICE, "Cannot find host for app '" .. appId .. "'")
+       local host_or_ip = task["host"] --take host  by default
+       if is_ip_per_task(app) then
+          ngx.log(ngx.NOTICE, "app '" .. appId .. "' is using ip-per-task")
+          -- override with the ip of the task
+          local task_ip_addresses = task["ipAddresses"]
+          if task_ip_addresses then
+             host_or_ip = task_ip_addresses[1]["ipAddress"]
+          else
+             ngx.log(ngx.NOTICE, "no ip address allocated yet for app '" .. appId .. "'")
+             goto continue
+          end
+       end
+
+       if not host_or_ip then
+          ngx.log(ngx.NOTICE, "Cannot find host or ip for app '" .. appId .. "'")
           goto continue
        end
 
-       local ports = task["ports"]
+       local ports = task["ports"] --task host port mapping by default
+       if is_ip_per_task(app) then
+         ports = {}
+         if is_user_network(app) then
+            -- override with ports from the container's portMappings
+            local port_mappings = app["container"]["docker"]["portMappings"] or app["portDefinitions"] or {}
+            local port_attr = app["container"]["docker"]["portMappings"] and "containerPort" or "port"
+            for _, port_mapping in ipairs(port_mappings) do
+               table.insert(ports, port_mapping[port_attr])
+            end
+         else
+            --override with the discovery ports
+            local discovery_ports = app["ipAddress"]["discovery"]["ports"]
+            for _, discovery_port in ipairs(discovery_ports) do
+                table.insert(ports, discovery_port["number"])
+            end
+         end
+       end
+
        if not ports then
           ngx.log(ngx.NOTICE, "Cannot find ports for app '" .. appId .. "'")
           goto continue
@@ -201,8 +232,8 @@ local function fetch_and_store_marathon_apps(auth_token)
           goto continue
        end
 
-       local url = scheme .. "://" .. host .. ":" .. port
-       svcApps[svcId] = {scheme=scheme, url=url, auth=authLevel}
+       local url = scheme .. "://" .. host_or_ip .. ":" .. port
+       svcApps[svcId] = {scheme=scheme, url=url}
 
        ::continue::
     end
@@ -223,7 +254,6 @@ local function fetch_and_store_marathon_apps(auth_token)
 
     return
 end
-
 
 local function fetch_and_store_marathon_leader(auth_token)
     -- Fetch Marathon leader address. If successful, store to SHM cache.
@@ -282,7 +312,7 @@ end
 local function fetch_and_store_state_mesos(auth_token)
     -- Fetch state JSON summary from Mesos. If successful, store to SHM cache.
     -- Expected to run within lock context.
-    local mesosRes, err = request(UPSTREAM_MESOS .. "/master/state-summary",
+    local response, err = request(UPSTREAM_MESOS .. "/master/state-summary",
                                   false,
                                   auth_token)
 
@@ -291,9 +321,38 @@ local function fetch_and_store_state_mesos(auth_token)
         return
     end
 
-    ngx.log(ngx.DEBUG, "Storing Mesos state to SHM.")
-    if not cache_data("mesosstate", mesosRes.body) then
-        ngx.log(ngx.WARN, "Storing mesos state cache failed")
+    local raw_state_summary, err = cjson_safe.decode(response.body)
+    if not raw_state_summary then
+        ngx.log(ngx.WARN, "Cannot decode Mesos state-summary JSON: " .. err)
+        return
+    end
+
+    local parsed_state_summary = {}
+    parsed_state_summary['f_by_id'] = {}
+    parsed_state_summary['f_by_name'] = {}
+    parsed_state_summary['agent_pids'] = {}
+
+    for _, framework in ipairs(raw_state_summary["frameworks"]) do
+        local f_id = framework["id"]
+        local f_name = util.normalize_service_name(framework["name"])
+
+        parsed_state_summary['f_by_id'][f_id] = {}
+        parsed_state_summary['f_by_id'][f_id]['webui_url'] = framework["webui_url"]
+        parsed_state_summary['f_by_id'][f_id]['name'] = f_name
+        parsed_state_summary['f_by_name'][f_name] = {}
+        parsed_state_summary['f_by_name'][f_name]['webui_url'] = framework["webui_url"]
+    end
+
+    for _, agent in ipairs(raw_state_summary["slaves"]) do
+        a_id = agent["id"]
+        parsed_state_summary['agent_pids'][a_id] = agent["pid"]
+    end
+
+    local parsed_state_summary_json = cjson_safe.encode(parsed_state_summary)
+
+    ngx.log(ngx.DEBUG, "Storing parsed Mesos state to SHM.")
+    if not cache_data("mesosstate", parsed_state_summary_json) then
+        ngx.log(ngx.WARN, "Storing parsed Mesos state to cache failed")
         return
     end
 
@@ -567,7 +626,7 @@ local function get_cache_entry(name, auth_token)
 
     -- Cache is stale, but still usable:
     if cache_age > _CONFIG.CACHE_MAX_AGE_SOFT_LIMIT then
-        ngx.log(ngx.NOTICE, "Using stale `" .. name .. "` cache entry to fulfill the request")
+        ngx.log(ngx.NOTICE, "Cache entry `" .. name .. "` is stale")
     end
 
     local entry_json = cache:get(name)

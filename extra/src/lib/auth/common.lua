@@ -1,13 +1,9 @@
 local cjson = require "cjson"
-local jwt = require "resty.jwt"
 local cookiejar = require "resty.cookie"
+local jwt = require "resty.jwt"
+local jwt_validators = require "resty.jwt-validators"
 
-
-local util = require "common.util"
-
-
-local SECRET_KEY = nil
-local BODY_AUTH_ERROR_RESPONSE = nil
+local util = require "util"
 
 local basichttpcred = os.getenv("MESOSPHERE_HTTP_CREDENTIALS")
 local errorpages_dir_path = os.getenv("AUTH_ERROR_PAGE_DIR_PATH")
@@ -32,34 +28,13 @@ else
     end
 end
 
-
-local key_file_path = os.getenv("SECRET_KEY_FILE_PATH")
-if key_file_path == nil then
-    ngx.log(ngx.WARN, "SECRET_KEY_FILE_PATH not set.")
-else
-    ngx.log(ngx.NOTICE, "Reading secret key from `" .. key_file_path .. "`.")
-    SECRET_KEY = util.get_stripped_first_line_from_file(key_file_path)
-    if (SECRET_KEY == nil or SECRET_KEY == '') then
-        -- Normalize to nil, for simplified subsequent per-request check.
-        SECRET_KEY = nil
-        ngx.log(ngx.WARN, "Secret key not set or empty string.")
-    end
-end
-
-
--- Refs:
--- https://github.com/openresty/lua-nginx-module#access_by_lua
--- https://github.com/SkyLothar/lua-resty-jwt
-
-
-local function exit_401()
+local function exit_401(authtype)
     ngx.status = ngx.HTTP_UNAUTHORIZED
     ngx.header["Content-Type"] = "text/html; charset=UTF-8"
-    ngx.header["WWW-Authenticate"] = "oauthjwt"
+    ngx.header["WWW-Authenticate"] = authtype
     ngx.say(BODY_401_ERROR_RESPONSE)
     return ngx.exit(ngx.HTTP_UNAUTHORIZED)
 end
-
 
 local function exit_403()
     ngx.status = ngx.HTTP_FORBIDDEN
@@ -68,33 +43,21 @@ local function exit_403()
     return ngx.exit(ngx.HTTP_FORBIDDEN)
 end
 
-
-local function validate_jwt_or_exit()
+-- We need to differentiate how secret_key value is acquired so we acquire it
+-- in different lua fila. This requires either passig this value as a global or
+-- as a function argument. Function argument seems like a safer approach.
+local function validate_jwt(secret_key)
     -- Inspect Authorization header in current request. Expect JSON Web Token in
     -- compliance with RFC 7519. Expect `uid` key in payload section. Extract
-    -- and return uid. In all other cases, terminate request handling and
-    -- respond with an appropriate HTTP error status code.
+    -- and return uid or the error code.
 
-    -- Get service data from cache
-    local authLevel = "full"
-    local svcapps = cache.get_cache_entry("svcapps")
-    if svcapps == nil then
-        ngx.log(ngx.INFO, "No svcapps cached")
-    else
-        local svc = svcapps[ngx.var.serviceid]
-        if svc and svc["auth"] then
-            authLevel = string.lower(svc["auth"])
-            ngx.log(ngx.DEBUG, "svc ".. ngx.var.serviceid .." auth: ".. authLevel)
-            if authLevel == "none" then
-                ngx.log(ngx.INFO, "No authentication required")
-                return
-            end
-        end
-    end
+    -- Refs:
+    -- https://github.com/openresty/lua-nginx-module#access_by_lua
+    -- https://github.com/SkyLothar/lua-resty-jwt
 
-    if SECRET_KEY == nil then
+    if secret_key == nil then
         ngx.log(ngx.ERR, "Secret key not set. Cannot validate request.")
-        return exit_401()
+        return nil, 401
     end
 
     local auth_header = ngx.var.http_Authorization
@@ -105,7 +68,7 @@ local function validate_jwt_or_exit()
           ngx.log(
               ngx.DEBUG, "Basic authentication header found " ..
               "look for token in cookie and override."
-              )
+              )   
           local cookie, err = cookiejar:new()
           token = cookie:get("dcos-acs-auth-cookie")
           if token == nil then
@@ -114,12 +77,12 @@ local function validate_jwt_or_exit()
               ngx.log(
                   ngx.DEBUG, "Use token from dcos-acs-auth-cookie, " ..
                   "set corresponding Authorization header for upstream."
-                  )
+                  )   
               ngx.req.set_header("Authorization", "token=" .. token)
-          end
+          end 
         else
           _, _, token = string.find(auth_header, "token=(.+)")
-        end
+        end 
     else
         ngx.log(ngx.DEBUG, "Authorization header not found.")
         -- Presence of Authorization header overrides cookie method entirely.
@@ -140,62 +103,48 @@ local function validate_jwt_or_exit()
 
     if token == nil then
         ngx.log(ngx.NOTICE, "No auth token in request.")
-        return exit_401()
+        return nil, 401
     end
 
     -- ngx.log(ngx.DEBUG, "Token: `" .. token .. "`")
-    -- Parse and verify token (also validate expiration time).
-    local jwt_obj = jwt:verify(SECRET_KEY, token)
+
+    -- By default, lua-resty-jwt does not validate claims, so we build up a
+    -- claim validation specification:
+    -- * DC/OS-specific `uid` claim to be present.
+    -- * make `exp` claim optional as some things still require "forever tokens"
+
+    local claim_spec = {
+        exp = jwt_validators.opt_is_not_expired(),
+        __jwt = jwt_validators.require_one_of({"uid"})
+        }
+
+    local jwt_obj = jwt:verify(secret_key, token, claim_spec)
     ngx.log(ngx.DEBUG, "JSONnized JWT table: " .. cjson.encode(jwt_obj))
+
     -- .verified is False even for messed up tokens whereas .valid can be nil.
     -- So, use .verified as reference.
-    if jwt_obj.verified == false then
+    if jwt_obj.verified ~= true then
         ngx.log(ngx.NOTICE, "Invalid token. Reason: ".. jwt_obj.reason)
-        return exit_401()
+        return nil, 401
     end
 
     ngx.log(ngx.DEBUG, "Valid token. Extract UID from payload.")
     local uid = jwt_obj.payload.uid
 
-    if uid == nil then
+    if uid == nil or uid == ngx.null then
         ngx.log(ngx.NOTICE, "Unexpected token payload: missing uid.")
-        return exit_401()
+        return nil, 401
     end
 
     ngx.log(ngx.NOTICE, "UID from valid JWT: `".. uid .. "`")
-
-    if authLevel == "full" then
-        res = ngx.location.capture("/acs/api/v1/users/" .. uid)
-        if res.status ~= ngx.HTTP_OK then
-            ngx.log(ngx.ERR, "User not found: `" .. uid .. "`")
-            return exit_401()
-        end
-    end
-    -- set authorization header back to basic
-    if auth_header ~= nil then
-        if string.find(auth_header, "Basic") then
-            ngx.log(ngx.DEBUG, "Setting authorization header back to basic.")
-            ngx.req.set_header("Authorization", auth_header)
-        else
-            if basichttpcred ~= nil then
-                ngx.log(ngx.DEBUG, "auth_header is token type set authorization to basic.")
-                ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
-            end
-        end
-    else
-        if basichttpcred ~= nil then
-            ngx.log(ngx.DEBUG, "auth_header nil set authorization to basic.")
-            ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
-        end
-    end
-
-    return uid
+    return uid, nil
 end
-
 
 -- Expose interface.
 local _M = {}
-_M.validate_jwt_or_exit = validate_jwt_or_exit
+_M.exit_401 = exit_401
+_M.exit_403 = exit_403
+_M.validate_jwt = validate_jwt
 
 
 return _M
