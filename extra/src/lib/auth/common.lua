@@ -105,7 +105,6 @@ local function validate_jwt(secret_key)
         ngx.log(ngx.NOTICE, "No auth token in request.")
         return nil, 401
     end
-
     -- ngx.log(ngx.DEBUG, "Token: `" .. token .. "`")
 
     -- By default, lua-resty-jwt does not validate claims, so we build up a
@@ -136,6 +135,27 @@ local function validate_jwt(secret_key)
         return nil, 401
     end
 
+    if auth_header ~= nil then
+        if string.find(auth_header, "Basic") then
+            ngx.log(ngx.DEBUG, "Setting authorization header back to basic.")
+            ngx.req.set_header("Authorization", auth_header)
+        else
+            if basichttpcred ~= nil then
+                if string.find(ngx.var.request_uri, "/service/marathon/") or string.find(ngx.var.request_uri, "/mesos/") then
+                    ngx.log(ngx.DEBUG, "auth_header is token type set authorization to basic.")
+                    ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
+                end
+            end
+        end
+    else
+        if basichttpcred ~= nil then
+            ngx.log(ngx.DEBUG, "request_uri: " .. ngx.var.request_uri)
+            if string.find(ngx.var.request_uri, "/service/marathon/") or string.find(ngx.var.request_uri, "/mesos/") then
+                ngx.log(ngx.DEBUG, "marathon/mesos proxy auth_header nil set authorization to basic.")
+                ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
+            end
+        end
+    end	
     ngx.log(ngx.NOTICE, "UID from valid JWT: `".. uid .. "`")
     return uid, nil
 end
