@@ -3,7 +3,7 @@ local jwt = require "resty.jwt"
 local util = require "util"
 
 local SECRET_KEY = nil
-
+local basichttpcred = os.getenv("MESOSPHERE_HTTP_CREDENTIALS")
 local key_file_path = os.getenv("SECRET_KEY_FILE_PATH")
 if key_file_path == nil then
     ngx.log(ngx.WARN, "SECRET_KEY_FILE_PATH not set.")
@@ -33,20 +33,25 @@ local function validate_jwt_or_exit()
         return ngx.exit(ngx.HTTP_INTERNAL_SERVER_ERROR)
     end
     -- set authorization header back to basic
+    local auth_header = ngx.var.http_Authorization
     if auth_header ~= nil then
         if string.find(auth_header, "Basic") then
             ngx.log(ngx.DEBUG, "Setting authorization header back to basic.")
             ngx.req.set_header("Authorization", auth_header)
         else
             if basichttpcred ~= nil then
-            ngx.log(ngx.DEBUG, "auth_header is token type set authorization to basic.")
-            ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
+               if string.find(ngx.var.request_uri, "/service/marathon/") or string.find(ngx.var.request_uri, "/mesos/") or string.find(ngx.var.request_uri, "/package/") then
+                    ngx.log(ngx.DEBUG, "auth_header is token type set authorization to basic.")
+                    ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
+               end
             end 
         end 
     else
         if basichttpcred ~= nil then
-            ngx.log(ngx.DEBUG, "auth_header nil set authorization to basic.")
-            ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
+            if string.find(ngx.var.request_uri, "/service/marathon/") or string.find(ngx.var.request_uri, "/mesos/") or string.find(ngx.var.request_uri, "/package/") then
+                ngx.log(ngx.DEBUG, "auth_header nil set authorization to basic.")
+                ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
+            end
         end 
     end
     return uid
