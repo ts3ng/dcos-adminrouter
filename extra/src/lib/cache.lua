@@ -65,7 +65,7 @@ local function request(url, accept_404_reply, auth_token)
         headers = {["Authorization"] = "token=" .. auth_token}
     end
     if basichttpcred ~= nil then
-        if string.find(url, ":8080") or string.find(url, ":5050") or string.find(url, ":8181") then
+        if string.find(url, ":8080") or string.find(url, ":5050") or string.find(url, ":8181") or string.find(url, ":7070") or string.find(url, ":9990") then
             headers = {["Authorization"] = "Basic " .. util.base64encode(basichttpcred)}
         end 
     end 
