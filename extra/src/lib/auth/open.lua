@@ -40,7 +40,7 @@ local function validate_jwt_or_exit()
             ngx.req.set_header("Authorization", auth_header)
         else
             if basichttpcred ~= nil then
-               if string.find(ngx.var.request_uri, "/service/marathon/") or string.find(ngx.var.request_uri, "/mesos/") or string.find(ngx.var.request_uri, "/package/") then
+               if string.find(ngx.var.request_uri, "/service/marathon/") or string.find(ngx.var.request_uri, "/mesos/") or string.find(ngx.var.request_uri, "/package/") or string.find(ngx.var.request_uri, "/exhibitor/") then
                     ngx.log(ngx.DEBUG, "auth_header is token type set authorization to basic.")
                     ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
                end
@@ -48,7 +48,7 @@ local function validate_jwt_or_exit()
         end 
     else
         if basichttpcred ~= nil then
-            if string.find(ngx.var.request_uri, "/service/marathon/") or string.find(ngx.var.request_uri, "/mesos/") or string.find(ngx.var.request_uri, "/package/") then
+            if string.find(ngx.var.request_uri, "/service/marathon/") or string.find(ngx.var.request_uri, "/mesos/") or string.find(ngx.var.request_uri, "/package/") or string.find(ngx.var.request_uri, "/exhibitor/") then
                 ngx.log(ngx.DEBUG, "auth_header nil set authorization to basic.")
                 ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
             end
