@@ -82,6 +82,10 @@ local function validate_jwt(secret_key)
           end 
         else
           _, _, token = string.find(auth_header, "token=(.+)")
+          --- Also check for alternative bearer header format used by the likes of kubernetes
+          if token == nil then
+              _, _, token = string.find(auth_header, "Bearer (.+)")
+          end
         end 
     else
         ngx.log(ngx.DEBUG, "Authorization header not found.")
