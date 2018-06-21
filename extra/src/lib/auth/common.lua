@@ -145,7 +145,7 @@ local function validate_jwt(secret_key)
             ngx.req.set_header("Authorization", auth_header)
         else
             if basichttpcred ~= nil then
-                if string.find(ngx.var.request_uri, "/agent/") or string.find(ngx.var.request_uri, "/marathon/") or string.find(ngx.var.request_uri, "/mesos/")  or string.find(ngx.var.request_uri, "/package/") or string.find(ngx.var.request_uri, "/exhibitor/") then
+                if string.find(ngx.var.request_uri, "/agent/") or string.find(ngx.var.request_uri, "/marathon/") or string.find(ngx.var.request_uri, "/mesos/")  or string.find(ngx.var.request_uri, "/package/") or string.find(ngx.var.request_uri, "/exhibitor/") or string.find(ngx.var.request_uri, "/cosmos/") then
                     ngx.log(ngx.DEBUG, "auth_header is token type set authorization to basic.")
                     ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
                 end
@@ -154,7 +154,7 @@ local function validate_jwt(secret_key)
     else
         if basichttpcred ~= nil then
             ngx.log(ngx.DEBUG, "request_uri: " .. ngx.var.request_uri)
-            if string.find(ngx.var.request_uri, "/agent/") or string.find(ngx.var.request_uri, "/marathon/") or string.find(ngx.var.request_uri, "/mesos/")  or string.find(ngx.var.request_uri, "/package/") or string.find(ngx.var.request_uri, "/exhibitor/") then
+            if string.find(ngx.var.request_uri, "/agent/") or string.find(ngx.var.request_uri, "/marathon/") or string.find(ngx.var.request_uri, "/mesos/")  or string.find(ngx.var.request_uri, "/package/") or string.find(ngx.var.request_uri, "/exhibitor/") or string.find(ngx.var.request_uri, "/cosmos/") then
                 ngx.log(ngx.DEBUG, "marathon/mesos proxy auth_header nil set authorization to basic.")
                 ngx.req.set_header("Authorization" , "Basic " .. util.base64encode(basichttpcred))
             end
